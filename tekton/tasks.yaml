@@ -14,6 +14,7 @@ spec:
       image: alpine:3
       command: [/bin/echo]
       args: ["$(params.message)"]
+
 ---
 apiVersion: tekton.dev/v1beta1
 kind: Task
@@ -37,16 +38,87 @@ spec:
         #!/usr/bin/env sh
         set -eu
         echo "Removing all files from ${WORKSPACE_SOURCE_PATH} ..."
-        # Delete any existing contents of the directory if it exists.
-        #
-        # We don't just "rm -rf ${WORKSPACE_SOURCE_PATH}" because ${WORKSPACE_SOURCE_PATH} might be "/"
-        # or the root of a mounted volume.
         if [ -d "${WORKSPACE_SOURCE_PATH}" ] ; then
-          # Delete non-hidden files and directories
           rm -rf "${WORKSPACE_SOURCE_PATH:?}"/*
-          # Delete files and directories starting with . but excluding ..
           rm -rf "${WORKSPACE_SOURCE_PATH}"/.[!.]*
-          # Delete files and directories starting with .. plus any other character
           rm -rf "${WORKSPACE_SOURCE_PATH}"/..?*
         fi
 
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: flake8
+spec:
+  description: This task will run flake8 on the provided input.
+  workspaces:
+    - name: source
+  params:
+    - name: image
+      description: The container image with Python and pip
+      type: string
+      default: python:3.9-slim
+    - name: path
+      description: The path to analyse
+      type: string
+      default: "."
+    - name: requirements_file
+      description: Requirements file
+      type: string
+      default: requirements.txt
+    - name: args
+      description: Arguments to pass to flake8
+      type: array
+      default: []
+  steps:
+    - name: flake8
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/bash
+        set -e
+        export HOME=/tmp/python
+        export PATH=$PATH:/tmp/python/.local/bin
+
+        if [ -n "$(params.requirements_file)" ] && \
+           [ -e "$(params.requirements_file)" ]; then
+          python -m pip install --user -r "$(params.requirements_file)"
+        fi
+
+        flake8 "$@" "$(params.path)"
+      args:
+        - "$(params.args[*])"
+
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: tests
+spec:
+  description: This task will run nosetests on the provided input.
+  workspaces:
+    - name: source
+  params:
+    - name: args
+      description: The arguments to pass to the nose CLI
+      type: string
+      default: -v
+    - name: database_uri
+      description: Database connection string of test database
+      type: string
+      default: sqlite:///test.db
+  steps:
+    - name: nosetests
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: DATABASE_URI
+          value: $(params.database_uri)
+      script: |
+        #!/bin/bash
+        set -e
+        echo "**** Installing dependencies ****"
+        python -m pip install --upgrade pip wheel
+        pip install -qr requirements.txt
+        echo "**** Running nosetests with: $(params.args) ****"
+        nosetests $(params.args)
